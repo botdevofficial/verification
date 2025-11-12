@@ -23,7 +23,7 @@ CACHE_TTL_SECONDS = 60
 # --- FLASK APP INITIALIZATION ---
 app = Flask(__name__)
 # Initialize CORS globally for all routes
-CORS(app) 
+CORS(app ,origins=["https://your-frontend-domain.com"]) 
 
 # --- JSONBIN.IO INTERFACE FUNCTIONS ---
 
@@ -208,6 +208,7 @@ if __name__ == '__main__':
     print(f"Starting production server using Waitress on 0.0.0.0:{port}...")
     serve(app, host='0.0.0.0', port=port, threads=10)
         
+
 
 
 
