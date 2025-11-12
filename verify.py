@@ -3,6 +3,7 @@ import requests
 from flask import Flask, request, jsonify
 from uuid import uuid4
 from datetime import datetime
+from flask_cors import CORS
 
 # --- CONFIGURATION: JSONBIN.IO CREDENTIALS ---
 # Using the credentials provided by the user.
@@ -17,8 +18,8 @@ DEVICE_CACHE = {}
 LAST_FETCH_TIME = None
 CACHE_TTL_SECONDS = 60 # Refresh cache every 60 seconds
 
-app = Flask(__name__)
-
+verify = Flask(__name__)
+CROSS(verify)
 # --- JSONBIN.IO INTERFACE FUNCTIONS ---
 
 def fetch_device_database():
@@ -224,4 +225,5 @@ if __name__ == '__main__':
         response.headers.add('Access-Control-Allow-Methods', 'POST,GET,OPTIONS')
         return response
         
-    app.run(debug=True)
+
+    app.run(host='0.0.0.0',port=port,debug=True)
