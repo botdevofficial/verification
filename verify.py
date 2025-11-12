@@ -1,35 +1,36 @@
 import json
 import requests
+import os # Necessary for reading the PORT environment variable if using app.run() locally
 from flask import Flask, request, jsonify
 from uuid import uuid4
 from datetime import datetime
 from flask_cors import CORS
 
 # --- CONFIGURATION: JSONBIN.IO CREDENTIALS ---
-# Using the credentials provided by the user.
 JSONBIN_API_KEY = "$2a$10$OWB0wBTxocZeAjW4yY5pyOQwnVSUr5a3bovRM9LZM5NJI8zpiT3eS"
 JSONBIN_BIN_ID = "69148aff43b1c97be9a8eebe"
 
 JSONBIN_URL = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}" 
 
-# Dictionary to hold the device data fetched from the bin
-# This acts as a cache to avoid fetching the bin on every single request
+# Local cache to reduce frequent calls to jsonbin.io
 DEVICE_CACHE = {} 
 LAST_FETCH_TIME = None
-CACHE_TTL_SECONDS = 60 # Refresh cache every 60 seconds
+CACHE_TTL_SECONDS = 60 
 
+# --- FLASK APP INITIALIZATION ---
+# FIX: Using 'app' consistently for the Flask instance name
 app = Flask(__name__)
-CORS(app)
+# Initialize CORS globally for all routes
+CORS(app) 
+
 # --- JSONBIN.IO INTERFACE FUNCTIONS ---
 
 def fetch_device_database():
-    """
-    Fetches the current device data from jsonbin.io or returns cached data.
-    """
+    """Fetches the current device data from jsonbin.io or returns cached data."""
     global DEVICE_CACHE, LAST_FETCH_TIME
     
-    # Simple cache logic: only fetch if cache is empty or expired
     now = datetime.now()
+    # Simple cache logic
     if DEVICE_CACHE and LAST_FETCH_TIME and (now - LAST_FETCH_TIME).total_seconds() < CACHE_TTL_SECONDS:
         return DEVICE_CACHE
         
@@ -39,7 +40,6 @@ def fetch_device_database():
         response = requests.get(JSONBIN_URL, headers=headers)
         response.raise_for_status() 
         
-        # Data is under 'record'
         DEVICE_CACHE = response.json().get('record', {})
         LAST_FETCH_TIME = now
         return DEVICE_CACHE
@@ -48,22 +48,18 @@ def fetch_device_database():
         return {} 
 
 def update_device_database(new_data):
-    """
-    Updates the entire device data on jsonbin.io by overwriting the bin content (PUT).
-    Also updates the local cache.
-    """
+    """Updates the entire device data on jsonbin.io by overwriting the bin content (PUT)."""
     global DEVICE_CACHE, LAST_FETCH_TIME
     
     headers = {
         'Content-Type': 'application/json',
         'X-Master-Key': JSONBIN_API_KEY,
-        'X-Bin-Versioning': 'false' # Ensure no versioning is created for large apps
+        'X-Bin-Versioning': 'false' 
     }
     try:
         response = requests.put(JSONBIN_URL, json=new_data, headers=headers)
         response.raise_for_status()
         
-        # Update local cache upon successful write
         DEVICE_CACHE = new_data
         LAST_FETCH_TIME = datetime.now()
         
@@ -75,21 +71,15 @@ def update_device_database(new_data):
 # --- DEVICE INFO EXTRACTION ---
 
 def get_device_info():
-    """
-    Extracts device information, prioritizing the IP sent by the frontend for accuracy.
-    """
+    """Extracts device information, prioritizing client-sent IP for accuracy."""
     
-    # 1. Get User Agent
     user_agent = request.headers.get('User-Agent', 'Unknown User Agent')
-    
-    # 2. Get Public IP (Client side is sent in the payload)
-    client_ip_from_payload = request.json.get('public_ip') if request.json else None
+    client_ip_from_payload = request.json.get('public_ip') if request.json and isinstance(request.json, dict) else None
 
-    # Fallback to server-side detected IP (X-Forwarded-For is best attempt)
+    # Prioritize client IP; fallback to server-detected IP (X-Forwarded-For is standard in proxies)
     remote_ip = client_ip_from_payload or request.headers.get('X-Forwarded-For', request.remote_addr)
-
-    # 3. Get the client-side ID sent by the browser cache
-    client_device_id = request.json.get('client_device_id') if request.json else None
+    
+    client_device_id = request.json.get('client_device_id') if request.json and isinstance(request.json, dict) else None
 
     return {
         "public_ip": remote_ip,
@@ -112,15 +102,13 @@ def verify_device():
         "user_agent": device_data['user_agent'],
     }
     
-    # --- Check A: Unique ID Match (Primary Verification) ---
+    # --- Check A: Unique ID Match (The browser is returning a known ID) ---
     if client_device_id and client_device_id in current_db:
-        # A known device is accessing the site again
         
-        # Update usage statistics
+        # Update usage statistics and last seen time
         current_db[client_device_id]['verification_count'] = current_db[client_device_id].get('verification_count', 1) + 1
         current_db[client_device_id]['last_seen'] = device_data['timestamp']
-        
-        update_device_database(current_db) # Commit the statistics update
+        update_device_database(current_db) 
         
         print(f"Check A: ID found ({client_device_id}). Verification FAILED (Duplicate).")
         return jsonify({
@@ -128,31 +116,30 @@ def verify_device():
             "status": "failed",
             "message": "Verification failed: Device ID already registered.",
             "device_id": client_device_id,
-            "action": "none" # Tell frontend to do nothing with the local ID
+            "action": "none" 
         }), 200
     
-    # --- Check B: Fingerprint Match (IP + User Agent) - Cache Bypass Check ---
+    # --- Check B: Fingerprint Match (Cache Bypass Attempt) ---
     
     fingerprint_match = None
+    # Create the current fingerprint signature
     fingerprint_key = f"{device_data['public_ip']} | {device_data['user_agent']}"
     
     for db_device_id, record in current_db.items():
+        # Create the stored fingerprint signature
         db_fingerprint_key = f"{record.get('ip_address')} | {record.get('user_agent')}"
         
-        # Check if the current IP/UA combination matches any existing record
         if fingerprint_key == db_fingerprint_key:
             fingerprint_match = db_device_id
             break
             
     if fingerprint_match:
-        # A device with this exact fingerprint already exists, but they didn't send the ID.
-        # This means they cleared their cache. We block access but re-issue the old ID.
+        # A device with this fingerprint exists, but the client didn't send an ID (cleared cache).
+        # We block access, but tell the client to re-save the existing ID.
         
-        # Update usage statistics of the matched device
         current_db[fingerprint_match]['verification_count'] = current_db[fingerprint_match].get('verification_count', 1) + 1
         current_db[fingerprint_match]['last_seen'] = device_data['timestamp']
-        current_db[fingerprint_match]['ip_address'] = device_data['public_ip'] # Update IP in case it changed slightly
-        
+        current_db[fingerprint_match]['ip_address'] = device_data['public_ip'] 
         update_device_database(current_db) 
         
         print(f"Check B: Fingerprint matched existing ID {fingerprint_match}. Verification FAILED (Re-save ID).")
@@ -160,16 +147,14 @@ def verify_device():
             **response_base,
             "status": "failed",
             "message": "Verification failed: Device fingerprint already registered. Access blocked.",
-            "device_id": fingerprint_match, # Return the old ID
-            "action": "resave" # Tell frontend to save this ID
+            "device_id": fingerprint_match, 
+            "action": "resave" 
         }), 200
 
     # --- Check C: No Match Found (New Device) ---
     
-    # Generate a unique device ID
     new_device_id = str(uuid4())
     
-    # Data to store for this new device
     storage_data = {
         "device_id": new_device_id,
         "first_seen": device_data['timestamp'],
@@ -179,10 +164,8 @@ def verify_device():
         "verification_count": 1
     }
     
-    # Add new device to the database structure
     current_db[new_device_id] = storage_data
     
-    # Store the updated database (jsonbin.io PUT logic)
     if update_device_database(current_db):
         print(f"Check C: New Device verified and stored: {new_device_id}. Verification SUCCESS.")
     
@@ -192,7 +175,7 @@ def verify_device():
             "status": "verified",
             "message": "Device successfully verified and registered.",
             "device_id": new_device_id,
-            "action": "save" # Tell frontend to save this new ID
+            "action": "save" 
         }), 200
     else:
          return jsonify({
@@ -212,20 +195,11 @@ def device_list():
         "devices": devices
     }), 200
 
-# To run the app, you need to install Flask and requests, then execute it:
-# $ pip install Flask requests
-# $ export FLASK_APP=app.py
-# $ flask run
-if __name__ == '__main__':
-    # Add CORS headers for the frontend to be able to talk to the backend
-    @app.after_request
-    def add_cors_headers(response):
-        response.headers.add('Access-Control-Allow-Origin', '*')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-        response.headers.add('Access-Control-Allow-Methods', 'POST,GET,OPTIONS')
-        return response
+# NOTE: The development startup block (if __name__ == '__main__': and app.run()) is removed.
+# Gunicorn will start the app using the command 'gunicorn app:app'.
         
 
     app.run(host='0.0.0.0',port=port,debug=True)
+
 
 
