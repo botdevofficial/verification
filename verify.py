@@ -19,7 +19,7 @@ LAST_FETCH_TIME = None
 CACHE_TTL_SECONDS = 60 # Refresh cache every 60 seconds
 
 verify = Flask(__name__)
-CROSS(verify)
+CORS(verify)
 # --- JSONBIN.IO INTERFACE FUNCTIONS ---
 
 def fetch_device_database():
@@ -227,3 +227,4 @@ if __name__ == '__main__':
         
 
     app.run(host='0.0.0.0',port=port,debug=True)
+
