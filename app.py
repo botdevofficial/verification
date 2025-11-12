@@ -1,24 +1,26 @@
 import json
 import requests
-import os # Necessary for reading the PORT environment variable if using app.run() locally
+import os 
 from flask import Flask, request, jsonify
 from uuid import uuid4
 from datetime import datetime
 from flask_cors import CORS
+# Import Waitress for production serving
+from waitress import serve 
 
 # --- CONFIGURATION: JSONBIN.IO CREDENTIALS ---
+# These credentials are provided by the user.
 JSONBIN_API_KEY = "$2a$10$OWB0wBTxocZeAjW4yY5pyOQwnVSUr5a3bovRM9LZM5NJI8zpiT3eS"
 JSONBIN_BIN_ID = "69148aff43b1c97be9a8eebe"
 
 JSONBIN_URL = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}" 
 
-# Local cache to reduce frequent calls to jsonbin.io
+# Local cache settings to avoid hitting the jsonbin API on every request
 DEVICE_CACHE = {} 
 LAST_FETCH_TIME = None
 CACHE_TTL_SECONDS = 60 
 
 # --- FLASK APP INITIALIZATION ---
-# FIX: Using 'app' consistently for the Flask instance name
 app = Flask(__name__)
 # Initialize CORS globally for all routes
 CORS(app) 
@@ -40,6 +42,7 @@ def fetch_device_database():
         response = requests.get(JSONBIN_URL, headers=headers)
         response.raise_for_status() 
         
+        # JSONBin returns the data under 'record'
         DEVICE_CACHE = response.json().get('record', {})
         LAST_FETCH_TIME = now
         return DEVICE_CACHE
@@ -54,7 +57,7 @@ def update_device_database(new_data):
     headers = {
         'Content-Type': 'application/json',
         'X-Master-Key': JSONBIN_API_KEY,
-        'X-Bin-Versioning': 'false' 
+        'X-Bin-Versioning': 'false' # Optional, but good for large, frequently updated bins
     }
     try:
         response = requests.put(JSONBIN_URL, json=new_data, headers=headers)
@@ -74,11 +77,13 @@ def get_device_info():
     """Extracts device information, prioritizing client-sent IP for accuracy."""
     
     user_agent = request.headers.get('User-Agent', 'Unknown User Agent')
+    # Safely get public_ip from JSON payload sent by frontend
     client_ip_from_payload = request.json.get('public_ip') if request.json and isinstance(request.json, dict) else None
 
-    # Prioritize client IP; fallback to server-detected IP (X-Forwarded-For is standard in proxies)
+    # Prioritize client-sent IP; fallback to server-detected IP (X-Forwarded-For is best in proxied envs)
     remote_ip = client_ip_from_payload or request.headers.get('X-Forwarded-For', request.remote_addr)
     
+    # Safely get client_device_id from JSON payload sent by frontend
     client_device_id = request.json.get('client_device_id') if request.json and isinstance(request.json, dict) else None
 
     return {
@@ -195,11 +200,17 @@ def device_list():
         "devices": devices
     }), 200
 
-# NOTE: The development startup block (if __name__ == '__main__': and app.run()) is removed.
-# Gunicorn will start the app using the command 'gunicorn app:app'.
+# --- PRODUCTION STARTUP (Waitress) ---
+if __name__ == '__main__':
+    # Render provides the port via the environment variable PORT.
+    # We use 0.0.0.0 to listen on all interfaces.
+    port = int(os.environ.get('PORT', 5000))
+    print(f"Starting production server using Waitress on 0.0.0.0:{port}...")
+    serve(app, host='0.0.0.0', port=port, threads=10)
         
 
-    app.run(host='0.0.0.0',port=port,debug=True)
+
+
 
 
 
